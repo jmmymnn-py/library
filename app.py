@@ -124,11 +124,10 @@ def load_library() -> pd.DataFrame:
         df["image_url"] = ""
     if "date_added" not in df.columns:
         df["date_added"] = datetime.now().strftime("%Y-%m-%d")
-    # NEW: ensure read_next column
+    # ensure read_next column
     if "read_next" not in df.columns:
         df["read_next"] = False
     else:
-        # Coerce to bool safely (handles True/False/1/0/"true"/"false")
         def _to_bool(x):
             s = str(x).strip().lower()
             if s in ("true", "1", "yes", "y", "t"):
@@ -563,12 +562,23 @@ def _display_read_next_strip(df: pd.DataFrame) -> None:
                         st.image(cover_url, width=160)
                     except Exception:
                         st.write("📖")
+
                 title = safe_str(row.get("title", "Untitled"))
-                year = safe_str(row.get("publish_date", ""))[:4] if safe_str(row.get("publish_date", ""))[:4].isdigit() else "N/A"
+                year_str = safe_str(row.get("publish_date", ""))
+                year = year_str[:4] if year_str[:4].isdigit() else "N/A"
+                group = safe_str(row.get("group", "Unsorted"))
+
                 st.markdown(f"**{title}**")
-                st.caption(f"Published: {year}")
-                if st.button("Open", key=f"rn_open_{idx}", use_container_width=True):
-                    st.session_state["navigate_to"] = ("book", title)
+                st.caption(f"Published: {year} • Shelf: {group}")
+
+                c_open, c_group = st.columns(2)
+                with c_open:
+                    if st.button("Open", key=f"rn_open_{idx}", use_container_width=True):
+                        st.session_state["navigate_to"] = ("book", title)
+                with c_group:
+                    # Quick jump to the shelf/group
+                    if st.button("View Shelf", key=f"rn_group_{idx}", use_container_width=True):
+                        st.session_state["navigate_to"] = ("group", group)
 
 def display_featured_book(df: pd.DataFrame) -> None:
     """Display a random featured book, then the Read Next strip (if any), then the library grid."""
@@ -605,7 +615,7 @@ def display_featured_book(df: pd.DataFrame) -> None:
         if description:
             preview = description[:200] + "..." if len(description) > 200 else description
             st.markdown(f"*{preview}*")
-        # REMOVED: "More Details" button per request
+        # Removed "More Details" button per request
 
     # Read Next between featured and library
     _display_read_next_strip(df)
@@ -678,7 +688,6 @@ def display_book_details(df: pd.DataFrame, book_title: str) -> None:
 
     st.header("📖 Book Details")
 
-    # We'll need the index several times
     book_idx = book.name
 
     col1, col2 = st.columns([2, 3])
@@ -720,7 +729,7 @@ def display_book_details(df: pd.DataFrame, book_title: str) -> None:
             if st.button(f"🔍 {author}", key=f"search_author_{i}"):
                 st.session_state["navigate_to"] = ("author", author)
 
-    # NEW: Read Next toggle (auto-saves)
+    # Read Next toggle (auto-saves)
     st.subheader("Read Next")
     current_read_next = bool(book.get("read_next", False))
     new_read_next = st.toggle("Add this book to your Read Next list", value=current_read_next, key=f"read_next_toggle_{book_idx}")
@@ -730,7 +739,6 @@ def display_book_details(df: pd.DataFrame, book_title: str) -> None:
             save_library(df, reason="Toggle Read Next")
             st.cache_data.clear()
             st.success("✅ Read Next updated.")
-            # Refresh the page so the home view can show the updated strip next time
         except Exception as e:
             st.error(f"❌ Error updating Read Next: {e}")
 
