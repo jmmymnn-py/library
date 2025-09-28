@@ -1,0 +1,17 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+
+# Streamlit cache (local)
+.streamlit/cache/
+.streamlit/cache/*
+
+# Credentials (don’t commit real secrets)
+.streamlit/secrets.toml
