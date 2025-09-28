@@ -575,10 +575,10 @@ def _display_read_next_strip(df: pd.DataFrame) -> None:
                 with c_open:
                     if st.button("Open", key=f"rn_open_{idx}", use_container_width=True):
                         st.session_state["navigate_to"] = ("book", title)
-                with c_group:
-                    # Quick jump to the shelf/group
-                    if st.button("View Shelf", key=f"rn_group_{idx}", use_container_width=True):
-                        st.session_state["navigate_to"] = ("group", group)
+                # with c_group:
+                #     # Quick jump to the shelf/group
+                #     if st.button("View Shelf", key=f"rn_group_{idx}", use_container_width=True):
+                #         st.session_state["navigate_to"] = ("group", group)
 
 def display_featured_book(df: pd.DataFrame) -> None:
     """Display a random featured book, then the Read Next strip (if any), then the library grid."""
