@@ -569,7 +569,7 @@ def _display_read_next_strip(df: pd.DataFrame) -> None:
                 group = safe_str(row.get("group", "Unsorted"))
 
                 st.markdown(f"**{title}**")
-                st.caption(f"Published: {year} • Shelf: {group}")
+                st.caption(f"Published: {year} /nShelf: {group}")
 
                 c_open, c_group = st.columns(2)
                 with c_open:
