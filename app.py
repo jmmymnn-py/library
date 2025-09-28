@@ -42,21 +42,17 @@ def _github_headers():
     }
 
 def _github_contents_url():
-    # e.g. https://api.github.com/repos/owner/repo/contents/path?ref=branch
     owner_repo = GITHUB_REPO
     path = requests.utils.quote(GITHUB_FILE_PATH, safe="")
     return f"https://api.github.com/repos/{owner_repo}/contents/{path}"
 
 def _github_read_csv() -> Optional[pd.DataFrame]:
-    """
-    Read CSV from GitHub via Contents API. Returns DataFrame or None on error.
-    """
+    """Read CSV from GitHub via Contents API. Returns DataFrame or None on error."""
     try:
         params = {"ref": GITHUB_BRANCH}
         r = requests.get(_github_contents_url(), headers=_github_headers(), params=params, timeout=15)
         if r.status_code == 200:
             data = r.json()
-            # 'content' is base64-encoded file contents
             content_b64 = data.get("content", "")
             decoded = base64.b64decode(content_b64).decode("utf-8")
             df = pd.read_csv(io.StringIO(decoded))
@@ -70,20 +66,14 @@ def _github_read_csv() -> Optional[pd.DataFrame]:
     return None
 
 def _github_write_csv(df: pd.DataFrame, commit_message: str) -> bool:
-    """
-    Write CSV to GitHub via Contents API (creates a commit).
-    Overwrites the current file (uses latest blob SHA to avoid conflicts).
-    Returns True on success.
-    """
+    """Write CSV to GitHub via Contents API (creates a commit)."""
     try:
-        # 1) Get current file SHA
         params = {"ref": GITHUB_BRANCH}
         r_get = requests.get(_github_contents_url(), headers=_github_headers(), params=params, timeout=15)
         sha = None
         if r_get.status_code == 200:
             sha = r_get.json().get("sha")
 
-        # 2) Prepare new content
         csv_str = df.to_csv(index=False)
         content_b64 = base64.b64encode(csv_str.encode("utf-8")).decode("utf-8")
 
@@ -97,9 +87,8 @@ def _github_write_csv(df: pd.DataFrame, commit_message: str) -> bool:
             },
         }
         if sha:
-            payload["sha"] = sha  # required to update existing file
+            payload["sha"] = sha
 
-        # 3) PUT to create commit
         r_put = requests.put(_github_contents_url(), headers=_github_headers(), data=json.dumps(payload), timeout=20)
         if r_put.status_code in (200, 201):
             return True
@@ -112,8 +101,7 @@ def _github_write_csv(df: pd.DataFrame, commit_message: str) -> bool:
 
 @st.cache_data
 def load_library() -> pd.DataFrame:
-    """Load the library CSV from GitHub if configured; else from local file.
-       Ensures required columns exist and fills missing covers."""
+    """Load the library CSV and ensure required columns exist."""
     try:
         if USE_GITHUB:
             df = _github_read_csv()
@@ -129,15 +117,28 @@ def load_library() -> pd.DataFrame:
         st.error(f"Error loading CSV: {e}")
         return pd.DataFrame()
 
-    # Ensure required columns exist
+    # Ensure required columns
     if "group" not in df.columns:
         df["group"] = "Unsorted"
     if "image_url" not in df.columns:
         df["image_url"] = ""
     if "date_added" not in df.columns:
         df["date_added"] = datetime.now().strftime("%Y-%m-%d")
+    # NEW: ensure read_next column
+    if "read_next" not in df.columns:
+        df["read_next"] = False
+    else:
+        # Coerce to bool safely (handles True/False/1/0/"true"/"false")
+        def _to_bool(x):
+            s = str(x).strip().lower()
+            if s in ("true", "1", "yes", "y", "t"):
+                return True
+            if s in ("false", "0", "no", "n", "f", "", "nan"):
+                return False
+            return False
+        df["read_next"] = df["read_next"].apply(_to_bool)
 
-    # Only fill image_url where blank/NaN
+    # Fill covers where missing
     missing_urls = df["image_url"].isna() | (df["image_url"].astype(str).str.strip() == "")
     if "ean_isbn13" in df.columns:
         df.loc[missing_urls, "image_url"] = df.loc[missing_urls, "ean_isbn13"].apply(get_default_cover_url)
@@ -145,7 +146,7 @@ def load_library() -> pd.DataFrame:
     return df
 
 def save_library(df: pd.DataFrame, reason: str = "Update library") -> None:
-    """Save the library DataFrame either back to GitHub (preferred) or local file."""
+    """Save to GitHub or local CSV."""
     try:
         if USE_GITHUB:
             ok = _github_write_csv(df, commit_message=f"{reason} - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
@@ -171,13 +172,11 @@ def get_single_book_row_by_title(df: pd.DataFrame, title: str) -> Optional[pd.Se
     return matches.iloc[0]
 
 def safe_str(val) -> str:
-    """Coerce to clean string for display/inputs."""
     if pd.isna(val) or val is None:
         return ""
     return str(val).strip()
 
 def split_authors(creators_field):
-    """Split a creators field into individual authors."""
     if pd.isna(creators_field) or not str(creators_field).strip():
         return ["Unknown"]
     creators_str = str(creators_field).strip()
@@ -192,7 +191,6 @@ def split_authors(creators_field):
     return authors if authors else ["Unknown"]
 
 def get_books_by_individual_author(df: pd.DataFrame, target_author: str) -> pd.DataFrame:
-    """Find books where target_author appears as one of the authors."""
     if df.empty or "creators" not in df.columns:
         return pd.DataFrame()
     target_lower = target_author.lower().strip()
@@ -206,7 +204,6 @@ def get_books_by_individual_author(df: pd.DataFrame, target_author: str) -> pd.D
     return df.loc[matching_indices] if matching_indices else pd.DataFrame()
 
 def get_query_param(key: str) -> str:
-    """Safely get a query parameter as a string."""
     q = st.query_params
     if key not in q:
         return ""
@@ -220,16 +217,14 @@ def get_query_param(key: str) -> str:
 # ----------------------------
 
 def _fetch_open_library(isbn: str) -> Dict[str, Any]:
-    """Try Open Library by ISBN."""
     try:
         r = requests.get(f"https://openlibrary.org/isbn/{isbn}.json", timeout=10)
         if r.status_code != 200:
             return {}
         data = r.json()
         title = data.get("title", "")
-        publish_date = safe_str(data.get("publish_date", ""))  # often like "1999"
+        publish_date = safe_str(data.get("publish_date", ""))
         pages = data.get("number_of_pages", "")
-        # Authors may be keys; we try to resolve minimal friendly text if present
         authors_list = []
         for a in data.get("authors", []) or []:
             key = a.get("key")
@@ -262,7 +257,6 @@ def _fetch_open_library(isbn: str) -> Dict[str, Any]:
         return {}
 
 def _fetch_google_books(isbn: str) -> Dict[str, Any]:
-    """Fallback: Google Books by ISBN (no API key needed)."""
     try:
         r = requests.get(f"https://www.googleapis.com/books/v1/volumes?q=isbn:{isbn}", timeout=10)
         if r.status_code != 200:
@@ -273,13 +267,11 @@ def _fetch_google_books(isbn: str) -> Dict[str, Any]:
         vi = items[0].get("volumeInfo", {})
         title = vi.get("title", "")
         authors = ", ".join(vi.get("authors", []) or [])
-        published_date = safe_str(vi.get("publishedDate", ""))  # may be "1999-01-01" or "1999"
+        published_date = safe_str(vi.get("publishedDate", ""))
         page_count = safe_str(vi.get("pageCount", ""))
         img = (vi.get("imageLinks", {}) or {}).get("thumbnail", "")
-        # Use Open Library large cover when possible
         image_url = get_default_cover_url(isbn) or safe_str(img)
         description = safe_str(vi.get("description", ""))
-        # normalize YYYY for publish_date
         year = published_date[:4] if len(published_date) >= 4 and published_date[:4].isdigit() else published_date
         return {
             "title": safe_str(title),
@@ -294,7 +286,6 @@ def _fetch_google_books(isbn: str) -> Dict[str, Any]:
         return {}
 
 def fetch_book_by_isbn(isbn: str) -> Dict[str, Any]:
-    """Try Open Library, then Google Books; return first good hit (may be partial)."""
     isbn = safe_str(isbn).replace("-", "").strip()
     if not isbn:
         return {}
@@ -308,37 +299,19 @@ def fetch_book_by_isbn(isbn: str) -> Dict[str, Any]:
 # ----------------------------
 
 def sync_with_libib(current_df: pd.DataFrame, libib_file) -> tuple[pd.DataFrame, dict]:
-    """
-    Sync current library with Libib export file.
-    Returns: (updated_df, stats_dict)
-    """
     try:
         libib_df = pd.read_csv(libib_file)
-
         isbn_columns = ['ean_isbn13', 'isbn13', 'isbn', 'ISBN', 'ISBN13', 'EAN']
-        libib_isbn_col = None
-        for col in isbn_columns:
-            if col in libib_df.columns:
-                libib_isbn_col = col
-                break
+        libib_isbn_col = next((c for c in isbn_columns if c in libib_df.columns), None)
         if libib_isbn_col is None:
             return current_df, {"error": "No ISBN column found in uploaded file"}
 
-        if current_df.empty or "ean_isbn13" not in current_df.columns:
-            existing_isbns = set()
-        else:
-            existing_isbns = set(current_df["ean_isbn13"].dropna().astype(str))
-
+        existing_isbns = set(current_df["ean_isbn13"].dropna().astype(str)) if (not current_df.empty and "ean_isbn13" in current_df.columns) else set()
         libib_isbns = libib_df[libib_isbn_col].dropna().astype(str)
-        new_books_mask = ~libib_isbns.isin(existing_isbns)
-        new_books = libib_df[new_books_mask].copy()
+        new_books = libib_df[~libib_isbns.isin(existing_isbns)].copy()
 
         if new_books.empty:
-            return current_df, {
-                "added": 0,
-                "skipped": len(libib_df),
-                "message": "No new books found in upload"
-            }
+            return current_df, {"added": 0, "skipped": len(libib_df), "message": "No new books found in upload"}
 
         column_mapping = {
             libib_isbn_col: "ean_isbn13",
@@ -361,7 +334,8 @@ def sync_with_libib(current_df: pd.DataFrame, libib_file) -> tuple[pd.DataFrame,
             new_row = {
                 "group": "New from Libib",
                 "image_url": "",
-                "date_added": current_date
+                "date_added": current_date,
+                "read_next": False,
             }
             for libib_col, our_col in column_mapping.items():
                 if libib_col in book.index and not pd.isna(book[libib_col]):
@@ -369,30 +343,21 @@ def sync_with_libib(current_df: pd.DataFrame, libib_file) -> tuple[pd.DataFrame,
             new_rows.append(new_row)
 
         new_rows_df = pd.DataFrame(new_rows)
-        if current_df.empty:
-            updated_df = new_rows_df
-        else:
-            updated_df = pd.concat([current_df, new_rows_df], ignore_index=True)
+        updated_df = pd.concat([current_df, new_rows_df], ignore_index=True) if not current_df.empty else new_rows_df
 
         if "ean_isbn13" in updated_df.columns:
             missing_urls = updated_df["image_url"].isna() | (updated_df["image_url"].astype(str).str.strip() == "")
             updated_df.loc[missing_urls, "image_url"] = updated_df.loc[missing_urls, "ean_isbn13"].apply(get_default_cover_url)
 
-        return updated_df, {
-            "added": len(new_books),
-            "skipped": len(libib_df) - len(new_books),
-            "message": f"Successfully added {len(new_books)} new books"
-        }
-
+        return updated_df, {"added": len(new_books), "skipped": len(libib_df) - len(new_books), "message": f"Successfully added {len(new_books)} new books"}
     except Exception as e:
         return current_df, {"error": f"Sync failed: {str(e)}"}
 
 # ----------------------------
-# Filtering and Sorting
+# Filtering / Sorting
 # ----------------------------
 
 def get_filter_options(df: pd.DataFrame) -> dict:
-    """Get unique values for filtering options."""
     if df.empty:
         return {}
     options = {}
@@ -413,12 +378,10 @@ def get_filter_options(df: pd.DataFrame) -> dict:
     return options
 
 def apply_filters(df: pd.DataFrame, filters: dict) -> pd.DataFrame:
-    """Apply selected filters to the DataFrame."""
     if df.empty:
         return df
     filtered_df = df.copy()
 
-    # Title/Description search (always-on search bar)
     if filters.get("title_search"):
         search_term = str(filters["title_search"]).lower()
         title_match = filtered_df["title"].astype(str).str.lower().str.contains(search_term, na=False)
@@ -428,11 +391,9 @@ def apply_filters(df: pd.DataFrame, filters: dict) -> pd.DataFrame:
             desc_match = pd.Series(False, index=filtered_df.index)
         filtered_df = filtered_df[title_match | desc_match]
 
-    # Group filter
     if filters.get("group") and filters["group"] != "All":
         filtered_df = filtered_df[filtered_df["group"].astype(str) == filters["group"]]
 
-    # Author filter
     if filters.get("author") and filters["author"] != "All":
         matching_indices = []
         for idx, row in filtered_df.iterrows():
@@ -441,7 +402,6 @@ def apply_filters(df: pd.DataFrame, filters: dict) -> pd.DataFrame:
                 matching_indices.append(idx)
         filtered_df = filtered_df.loc[matching_indices] if matching_indices else pd.DataFrame()
 
-    # Year filter
     if filters.get("year") and filters["year"] != "All":
         year_mask = filtered_df["publish_date"].astype(str).str.startswith(filters["year"])
         filtered_df = filtered_df[year_mask]
@@ -449,7 +409,6 @@ def apply_filters(df: pd.DataFrame, filters: dict) -> pd.DataFrame:
     return filtered_df
 
 def sort_dataframe(df: pd.DataFrame, sort_by: str, ascending: bool = True) -> pd.DataFrame:
-    """Sort DataFrame by specified column."""
     if df.empty or sort_by not in df.columns:
         return df
     if sort_by == "publish_date":
@@ -506,7 +465,6 @@ def display_library_controls(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
 
     with e3:
         with st.expander("Sync", expanded=False):
-            # Export CSV of the *current* library (not only filtered) — matches your prior design
             if st.button("Export CSV"):
                 try:
                     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -546,7 +504,6 @@ def display_library_controls(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     return sorted_df, filters
 
 def display_libib_sync():
-    """Display Libib sync interface."""
     st.header("📤 Sync with Libib")
     st.markdown("""
     **How to sync:**
@@ -585,8 +542,36 @@ def display_libib_sync():
         st.session_state["show_libib_sync"] = False
         st.rerun()
 
+def _display_read_next_strip(df: pd.DataFrame) -> None:
+    """Show 'Read Next' list if any, under Featured Book and above Library."""
+    if df.empty or "read_next" not in df.columns:
+        return
+    rn = df[df["read_next"] == True]
+    if rn.empty:
+        return
+
+    st.subheader("📚 Read Next")
+    cols = st.columns(3)
+    for i, (idx, row) in enumerate(rn.iterrows()):
+        col = cols[i % 3]
+        with col:
+            card = st.container(border=True)
+            with card:
+                cover_url = safe_str(row.get("image_url", "")) or get_default_cover_url(row.get("ean_isbn13"))
+                if cover_url:
+                    try:
+                        st.image(cover_url, width=160)
+                    except Exception:
+                        st.write("📖")
+                title = safe_str(row.get("title", "Untitled"))
+                year = safe_str(row.get("publish_date", ""))[:4] if safe_str(row.get("publish_date", ""))[:4].isdigit() else "N/A"
+                st.markdown(f"**{title}**")
+                st.caption(f"Published: {year}")
+                if st.button("Open", key=f"rn_open_{idx}", use_container_width=True):
+                    st.session_state["navigate_to"] = ("book", title)
+
 def display_featured_book(df: pd.DataFrame) -> None:
-    """Display a random featured book and the library grid."""
+    """Display a random featured book, then the Read Next strip (if any), then the library grid."""
     if df.empty:
         st.warning("No books found in your library.")
         return
@@ -620,8 +605,10 @@ def display_featured_book(df: pd.DataFrame) -> None:
         if description:
             preview = description[:200] + "..." if len(description) > 200 else description
             st.markdown(f"*{preview}*")
-        if st.button("More Details", key="featured_book_details", type="primary"):
-            st.session_state["navigate_to"] = ("book", title)
+        # REMOVED: "More Details" button per request
+
+    # Read Next between featured and library
+    _display_read_next_strip(df)
 
     st.divider()
     st.title("📚 My Library")
@@ -674,10 +661,8 @@ def display_featured_book(df: pd.DataFrame) -> None:
                 if st.button("📖 View Details", key=f"details_{idx}", use_container_width=True):
                     st.session_state["navigate_to"] = ("book", title)
 
-    # Back to top helper at the end of the grid
     st.markdown('[⬆️ Back to top](#top)')
 
-# Backward-compatible alias so main() call still works
 def display_library(df: pd.DataFrame) -> None:
     display_featured_book(df)
 
@@ -692,6 +677,9 @@ def display_book_details(df: pd.DataFrame, book_title: str) -> None:
         return
 
     st.header("📖 Book Details")
+
+    # We'll need the index several times
+    book_idx = book.name
 
     col1, col2 = st.columns([2, 3])
     with col1:
@@ -732,6 +720,20 @@ def display_book_details(df: pd.DataFrame, book_title: str) -> None:
             if st.button(f"🔍 {author}", key=f"search_author_{i}"):
                 st.session_state["navigate_to"] = ("author", author)
 
+    # NEW: Read Next toggle (auto-saves)
+    st.subheader("Read Next")
+    current_read_next = bool(book.get("read_next", False))
+    new_read_next = st.toggle("Add this book to your Read Next list", value=current_read_next, key=f"read_next_toggle_{book_idx}")
+    if new_read_next != current_read_next:
+        try:
+            df.at[book_idx, "read_next"] = new_read_next
+            save_library(df, reason="Toggle Read Next")
+            st.cache_data.clear()
+            st.success("✅ Read Next updated.")
+            # Refresh the page so the home view can show the updated strip next time
+        except Exception as e:
+            st.error(f"❌ Error updating Read Next: {e}")
+
     st.subheader("Description")
     current_description = safe_str(book.get("description", ""))
     new_description = st.text_area("Description", value=current_description, height=150, key="description_input")
@@ -741,7 +743,6 @@ def display_book_details(df: pd.DataFrame, book_title: str) -> None:
     with c2:
         if st.button("💾 Save All Changes", key="save_all_button", type="primary"):
             try:
-                book_idx = book.name
                 df.at[book_idx, "title"] = new_title
                 df.at[book_idx, "creators"] = new_creators
                 df.at[book_idx, "length"] = new_length
@@ -878,7 +879,6 @@ def display_add_book(df: pd.DataFrame) -> None:
                     except Exception:
                         st.write("📖")
             with c2:
-                # Editable fields before save
                 title = st.text_input("Title", value=safe_str(result.get("title", "")), key="add_title")
                 creators = st.text_input("Authors/Creators", value=safe_str(result.get("creators", "")), key="add_creators")
                 publish_date = st.text_input("Publish Year", value=safe_str(result.get("publish_date", "")), key="add_publish_date")
@@ -887,12 +887,10 @@ def display_add_book(df: pd.DataFrame) -> None:
                 description = st.text_area("Description", value=safe_str(result.get("description", "")), key="add_description", height=120)
                 ean_isbn13 = st.text_input("ISBN-13", value=safe_str(result.get("ean_isbn13", isbn)), key="add_ean")
 
-                # Group/shelf (optional)
                 groups = sorted([g for g in df.get("group", pd.Series([])).fillna("Unsorted").astype(str).unique().tolist() if g])
                 group_choice = st.selectbox("Shelf / Group (optional)", ["(none)"] + groups, key="add_group")
 
                 if st.button("💾 Add to Library", type="primary"):
-                    # avoid duplicates by ISBN-13
                     if not ean_isbn13:
                         st.error("ISBN-13 is required to add.")
                         return
@@ -912,13 +910,13 @@ def display_add_book(df: pd.DataFrame) -> None:
                         "ean_isbn13": safe_str(ean_isbn13),
                         "group": (group_choice if group_choice != "(none)" else "Unsorted"),
                         "date_added": datetime.now().strftime("%Y-%m-%d"),
+                        "read_next": False,
                     }
                     updated_df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True) if not df.empty else pd.DataFrame([new_row])
                     save_library(updated_df, reason="Add book (manual)")
                     st.cache_data.clear()
                     st.success("✅ Book added!")
                     st.session_state.pop("add_result", None)
-                    # Navigate to the book page
                     st.session_state["navigate_to"] = ("book", new_row["title"])
 
     st.markdown('[⬆️ Back to top](#top)')
@@ -928,7 +926,6 @@ def display_add_book(df: pd.DataFrame) -> None:
 # ----------------------------
 
 def handle_navigation():
-    """Handle navigation based on session state."""
     if "navigate_to" in st.session_state:
         nav_type, nav_value = st.session_state["navigate_to"]
         st.query_params.clear()
@@ -946,7 +943,6 @@ def main() -> None:
     handle_navigation()
     df = load_library()
 
-    # Sidebar debug + quick add
     with st.sidebar:
         if st.button("➕ Add Book", use_container_width=True, key="side_add"):
             st.session_state["navigate_to"] = ("add", "")
