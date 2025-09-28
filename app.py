@@ -677,9 +677,14 @@ def display_featured_book(df: pd.DataFrame) -> None:
 def display_library(df: pd.DataFrame) -> None:
     display_featured_book(df)
 
+# ----------------------------
+# Book Details (with Edit Mode)
+# ----------------------------
+
 def display_book_details(df: pd.DataFrame, book_title: str) -> None:
     if st.button("⬅ Back to Library"):
         st.session_state["navigate_to"] = ("home", "")
+
     book = get_single_book_row_by_title(df, book_title)
     if book is None:
         st.error(f"Could not find a book titled: {book_title!r}")
@@ -688,8 +693,11 @@ def display_book_details(df: pd.DataFrame, book_title: str) -> None:
         return
 
     st.header("📖 Book Details")
-
     book_idx = book.name
+
+    # Global edit toggle (default OFF)
+    edit_mode = st.toggle("✏️ Edit mode", value=False, key=f"edit_mode_{book_idx}")
+    st.caption("Turn on to edit the fields below. Read Next remains available anytime.")
 
     col1, col2 = st.columns([2, 3])
     with col1:
@@ -701,36 +709,72 @@ def display_book_details(df: pd.DataFrame, book_title: str) -> None:
                 st.image(display_url, width=200)
             except Exception:
                 st.write("📖 No cover available")
-        new_image_url = st.text_input("Image URL", value=current_image_url, key="image_url_input")
+
+        # Image URL: editable only in edit mode
+        if edit_mode:
+            new_image_url = st.text_input("Image URL", value=current_image_url, key=f"image_url_input_{book_idx}")
+        else:
+            st.markdown("**Image URL**")
+            st.code(current_image_url or "(empty)")
+            new_image_url = current_image_url  # carry forward
 
     with col2:
         st.subheader("Book Information")
-        new_title = st.text_input("Title", value=safe_str(book.get("title", "")), key="title_input")
-        new_creators = st.text_input("Authors/Creators", value=safe_str(book.get("creators", "")), key="creators_input")
-        new_length = st.text_input("Page Count", value=safe_str(book.get("length", "")), key="length_input")
-        new_publish_date = st.text_input("Publish Date", value=safe_str(book.get("publish_date", "")), key="publish_date_input")
 
-        current_group = safe_str(book.get("group", "Unsorted"))
+        # Current values
+        cur_title = safe_str(book.get("title", ""))
+        cur_creators = safe_str(book.get("creators", ""))
+        cur_length = safe_str(book.get("length", ""))
+        cur_publish_date = safe_str(book.get("publish_date", ""))
+        cur_group = safe_str(book.get("group", "Unsorted"))
+        cur_isbn = safe_str(book.get("ean_isbn13", ""))
+
+        # Group list for editing
         all_groups = df["group"].fillna("Unsorted").astype(str).unique().tolist()
         all_groups = sorted([g for g in all_groups if g])
-        if current_group not in all_groups:
-            all_groups.append(current_group)
+        if cur_group and cur_group not in all_groups:
+            all_groups.append(cur_group)
             all_groups = sorted(all_groups)
-        try:
-            group_index = all_groups.index(current_group)
-        except ValueError:
-            group_index = 0
 
-        new_group = st.selectbox("Group/Location", all_groups, index=group_index, key="group_select")
-        new_isbn = st.text_input("ISBN-13", value=safe_str(book.get("ean_isbn13", "")), key="isbn_input")
+        if edit_mode:
+            new_title = st.text_input("Title", value=cur_title, key=f"title_input_{book_idx}")
+            new_creators = st.text_input("Authors/Creators", value=cur_creators, key=f"creators_input_{book_idx}")
+            new_length = st.text_input("Page Count", value=cur_length, key=f"length_input_{book_idx}")
+            new_publish_date = st.text_input("Publish Date", value=cur_publish_date, key=f"publish_date_input_{book_idx}")
 
+            try:
+                group_index = all_groups.index(cur_group) if cur_group in all_groups else 0
+            except ValueError:
+                group_index = 0
+            new_group = st.selectbox("Group/Location", all_groups, index=group_index, key=f"group_select_{book_idx}")
+
+            new_isbn = st.text_input("ISBN-13", value=cur_isbn, key=f"isbn_input_{book_idx}")
+        else:
+            # Read-only view
+            st.markdown(f"**Title:** {cur_title or 'Untitled'}")
+            st.markdown(f"**Authors/Creators:** {cur_creators or 'Unknown'}")
+            year_txt = cur_publish_date[:4] if len(cur_publish_date) >= 4 and cur_publish_date[:4].isdigit() else (cur_publish_date or 'Unknown')
+            st.markdown(f"**Published:** {year_txt or 'Unknown'}")
+            st.markdown(f"**Group/Location:** {cur_group or 'Unsorted'}")
+            st.markdown(f"**Page Count:** {cur_length or 'Unknown'}")
+            st.markdown(f"**ISBN-13:** {cur_isbn or '(none)'}")
+
+            # carry forward current values so Save logic can reuse
+            new_title = cur_title
+            new_creators = cur_creators
+            new_length = cur_length
+            new_publish_date = cur_publish_date
+            new_group = cur_group
+            new_isbn = cur_isbn
+
+        # Quick Author Search (always available)
         st.markdown("**Quick Author Search:**")
         authors = split_authors(book.get("creators", "Unknown"))
         for i, author in enumerate(authors):
-            if st.button(f"🔍 {author}", key=f"search_author_{i}"):
+            if st.button(f"🔍 {author}", key=f"search_author_{book_idx}_{i}"):
                 st.session_state["navigate_to"] = ("author", author)
 
-    # Read Next toggle (auto-saves)
+    # Read Next toggle (remains live)
     st.subheader("Read Next")
     current_read_next = bool(book.get("read_next", False))
     new_read_next = st.toggle("Add this book to your Read Next list", value=current_read_next, key=f"read_next_toggle_{book_idx}")
@@ -743,34 +787,46 @@ def display_book_details(df: pd.DataFrame, book_title: str) -> None:
         except Exception as e:
             st.error(f"❌ Error updating Read Next: {e}")
 
+    # Description (gated by edit mode)
     st.subheader("Description")
     current_description = safe_str(book.get("description", ""))
-    new_description = st.text_area("Description", value=current_description, height=150, key="description_input")
+    if edit_mode:
+        new_description = st.text_area("Description", value=current_description, height=150, key=f"description_input_{book_idx}")
+    else:
+        if current_description:
+            st.markdown(current_description)
+        else:
+            st.caption("No description.")
+        new_description = current_description
 
     st.divider()
-    c1, c2, c3 = st.columns([1, 1, 1])
-    with c2:
-        if st.button("💾 Save All Changes", key="save_all_button", type="primary"):
-            try:
-                df.at[book_idx, "title"] = new_title
-                df.at[book_idx, "creators"] = new_creators
-                df.at[book_idx, "length"] = new_length
-                df.at[book_idx, "publish_date"] = new_publish_date
-                df.at[book_idx, "group"] = new_group
-                df.at[book_idx, "image_url"] = new_image_url
-                df.at[book_idx, "description"] = new_description
-                if "ean_isbn13" in df.columns:
-                    df.at[book_idx, "ean_isbn13"] = new_isbn
 
-                save_library(df, reason="Edit book details")
-                st.cache_data.clear()
-                st.success("✅ All changes saved successfully!")
+    # Save button only visible in edit mode
+    if edit_mode:
+        c1, c2, c3 = st.columns([1, 1, 1])
+        with c2:
+            if st.button("💾 Save All Changes", key=f"save_all_button_{book_idx}", type="primary"):
+                try:
+                    df.at[book_idx, "title"] = new_title
+                    df.at[book_idx, "creators"] = new_creators
+                    df.at[book_idx, "length"] = new_length
+                    df.at[book_idx, "publish_date"] = new_publish_date
+                    df.at[book_idx, "group"] = new_group
+                    df.at[book_idx, "image_url"] = new_image_url
+                    df.at[book_idx, "description"] = new_description
+                    if "ean_isbn13" in df.columns:
+                        df.at[book_idx, "ean_isbn13"] = new_isbn
 
-                if new_title != safe_str(book.get("title", "")):
-                    st.info("Title was changed. Redirecting...")
-                    st.session_state["navigate_to"] = ("book", new_title)
-            except Exception as e:
-                st.error(f"❌ Error saving changes: {e}")
+                    old_title = cur_title
+                    save_library(df, reason="Edit book details")
+                    st.cache_data.clear()
+                    st.success("✅ All changes saved successfully!")
+
+                    if new_title != old_title:
+                        st.info("Title was changed. Redirecting...")
+                        st.session_state["navigate_to"] = ("book", new_title)
+                except Exception as e:
+                    st.error(f"❌ Error saving changes: {e}")
 
     with st.expander("📋 Current Values (Reference)", expanded=False):
         st.write("**Original Title:**", safe_str(book.get("title", "")))
