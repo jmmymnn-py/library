@@ -2,7 +2,7 @@
 import streamlit as st
 import pandas as pd
 import requests
-from typing import Optional
+from typing import Optional, Tuple, Dict, Any
 from datetime import datetime
 import io
 import base64
@@ -118,7 +118,6 @@ def load_library() -> pd.DataFrame:
         if USE_GITHUB:
             df = _github_read_csv()
             if df is None:
-                # If GitHub read failed, fall back to local file (if present)
                 df = pd.read_csv(LOCAL_CSV_PATH)
         else:
             df = pd.read_csv(LOCAL_CSV_PATH)
@@ -217,7 +216,95 @@ def get_query_param(key: str) -> str:
     return str(value)
 
 # ----------------------------
-# Libib Sync Functions
+# Third-party lookups for "Add Book"
+# ----------------------------
+
+def _fetch_open_library(isbn: str) -> Dict[str, Any]:
+    """Try Open Library by ISBN."""
+    try:
+        r = requests.get(f"https://openlibrary.org/isbn/{isbn}.json", timeout=10)
+        if r.status_code != 200:
+            return {}
+        data = r.json()
+        title = data.get("title", "")
+        publish_date = safe_str(data.get("publish_date", ""))  # often like "1999"
+        pages = data.get("number_of_pages", "")
+        # Authors may be keys; we try to resolve minimal friendly text if present
+        authors_list = []
+        for a in data.get("authors", []) or []:
+            key = a.get("key")
+            if not key:
+                continue
+            try:
+                ar = requests.get(f"https://openlibrary.org{key}.json", timeout=6)
+                if ar.status_code == 200:
+                    authors_list.append(ar.json().get("name", ""))
+            except Exception:
+                pass
+        authors = ", ".join([a for a in authors_list if a]) if authors_list else ""
+        image_url = get_default_cover_url(isbn)
+        description = ""
+        desc = data.get("description", "")
+        if isinstance(desc, dict):
+            description = safe_str(desc.get("value", ""))
+        else:
+            description = safe_str(desc)
+        return {
+            "title": safe_str(title),
+            "creators": safe_str(authors),
+            "publish_date": safe_str(publish_date),
+            "length": safe_str(pages),
+            "image_url": image_url,
+            "description": description,
+            "ean_isbn13": safe_str(isbn),
+        }
+    except Exception:
+        return {}
+
+def _fetch_google_books(isbn: str) -> Dict[str, Any]:
+    """Fallback: Google Books by ISBN (no API key needed)."""
+    try:
+        r = requests.get(f"https://www.googleapis.com/books/v1/volumes?q=isbn:{isbn}", timeout=10)
+        if r.status_code != 200:
+            return {}
+        items = r.json().get("items", [])
+        if not items:
+            return {}
+        vi = items[0].get("volumeInfo", {})
+        title = vi.get("title", "")
+        authors = ", ".join(vi.get("authors", []) or [])
+        published_date = safe_str(vi.get("publishedDate", ""))  # may be "1999-01-01" or "1999"
+        page_count = safe_str(vi.get("pageCount", ""))
+        img = (vi.get("imageLinks", {}) or {}).get("thumbnail", "")
+        # Use Open Library large cover when possible
+        image_url = get_default_cover_url(isbn) or safe_str(img)
+        description = safe_str(vi.get("description", ""))
+        # normalize YYYY for publish_date
+        year = published_date[:4] if len(published_date) >= 4 and published_date[:4].isdigit() else published_date
+        return {
+            "title": safe_str(title),
+            "creators": safe_str(authors),
+            "publish_date": safe_str(year),
+            "length": page_count,
+            "image_url": image_url,
+            "description": description,
+            "ean_isbn13": safe_str(isbn),
+        }
+    except Exception:
+        return {}
+
+def fetch_book_by_isbn(isbn: str) -> Dict[str, Any]:
+    """Try Open Library, then Google Books; return first good hit (may be partial)."""
+    isbn = safe_str(isbn).replace("-", "").strip()
+    if not isbn:
+        return {}
+    data = _fetch_open_library(isbn)
+    if data.get("title"):
+        return data
+    return _fetch_google_books(isbn)
+
+# ----------------------------
+# Libib Sync
 # ----------------------------
 
 def sync_with_libib(current_df: pd.DataFrame, libib_file) -> tuple[pd.DataFrame, dict]:
@@ -301,7 +388,7 @@ def sync_with_libib(current_df: pd.DataFrame, libib_file) -> tuple[pd.DataFrame,
         return current_df, {"error": f"Sync failed: {str(e)}"}
 
 # ----------------------------
-# Filtering and Sorting Functions
+# Filtering and Sorting
 # ----------------------------
 
 def get_filter_options(df: pd.DataFrame) -> dict:
@@ -331,7 +418,7 @@ def apply_filters(df: pd.DataFrame, filters: dict) -> pd.DataFrame:
         return df
     filtered_df = df.copy()
 
-    # Title/Description search (updated)
+    # Title/Description search (always-on search bar)
     if filters.get("title_search"):
         search_term = str(filters["title_search"]).lower()
         title_match = filtered_df["title"].astype(str).str.lower().str.contains(search_term, na=False)
@@ -377,70 +464,81 @@ def sort_dataframe(df: pd.DataFrame, sort_by: str, ascending: bool = True) -> pd
         return df.sort_values(sort_by, ascending=ascending, na_position="last")
 
 # ----------------------------
-# View: Main Library Grid with Cards
+# Views / UI Blocks
 # ----------------------------
 
 def display_library_controls(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
-    """Display filtering and sorting controls. Returns filtered/sorted df and filter stats."""
+    """Always-on search + expanders for Filters, Sort, Sync. Returns filtered/sorted df."""
     filter_options = get_filter_options(df)
 
-    col1, col2, col3, col4, col5 = st.columns([1, 1, 1, 1, 1])
+    # Always-visible search + quick actions
+    st.markdown('<a name="top"></a>', unsafe_allow_html=True)
+    top_bar = st.container()
+    with top_bar:
+        c1, c2 = st.columns([3, 1])
+        with c1:
+            title_search = st.text_input("🔎 Search", placeholder="Title or description...", key="search_input")
+        with c2:
+            if st.button("➕ Add Book", use_container_width=True):
+                st.session_state["navigate_to"] = ("add", "")
 
-    with col1:
-        with st.expander("Search"):
-            title_search = st.text_input("Search", placeholder="Title or description...")
+    # Expanders row: Filters / Sort / Sync
+    e1, e2, e3 = st.columns(3)
 
-    with col2:
-        with st.expander("Filters"):
-            group_filter = st.selectbox("Group", ["All"] + filter_options.get("groups", []))
-            author_filter = st.selectbox("Author", ["All"] + filter_options.get("authors", [])[:50])
-            year_filter = st.selectbox("Year", ["All"] + filter_options.get("years", []))
+    with e1:
+        with st.expander("Filters", expanded=False):
+            group_filter = st.selectbox("Group", ["All"] + filter_options.get("groups", []), key="flt_group")
+            author_filter = st.selectbox("Author", ["All"] + filter_options.get("authors", [])[:50], key="flt_author")
+            year_filter = st.selectbox("Year", ["All"] + filter_options.get("years", []), key="flt_year")
 
-    with col3:
-        sort_options = {
-            "title": "Title",
-            "creators": "Author",
-            "publish_date": "Year",
-            "date_added": "Added",
-            "group": "Group"
-        }
-        sort_by = st.selectbox("Sort", list(sort_options.keys()), format_func=lambda x: sort_options[x])
-        ascending = st.selectbox("Order", ["Ascending", "Descending"]) == "Ascending"
+    with e2:
+        with st.expander("Sort", expanded=False):
+            sort_options = {
+                "title": "Title",
+                "creators": "Author",
+                "publish_date": "Year",
+                "date_added": "Added",
+                "group": "Group"
+            }
+            sort_by = st.selectbox("Sort by", list(sort_options.keys()),
+                                   format_func=lambda x: sort_options[x], key="sort_by")
+            ascending = st.selectbox("Order", ["Ascending", "Descending"], key="sort_order") == "Ascending"
 
-    with col4:
-        if st.button("Export CSV"):
-            try:
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                export_filename = f"library_export_{timestamp}.csv"
-                # Export the CURRENT VIEW (df) not just filtered. Here we export entire df by design:
-                df.to_csv(export_filename, index=False)
-                st.success(f"Exported to {export_filename}")
-                csv_data = df.to_csv(index=False)
-                st.download_button(
-                    label="Download",
-                    data=csv_data,
-                    file_name=export_filename,
-                    mime="text/csv",
-                    key="download_export"
-                )
-            except Exception as e:
-                st.error(f"Export failed: {e}")
-
-    with col5:
-        if st.button("Clear"):
-            st.rerun()
-        if st.button("Sync Libib"):
-            st.session_state["show_libib_sync"] = True
+    with e3:
+        with st.expander("Sync", expanded=False):
+            # Export CSV of the *current* library (not only filtered) — matches your prior design
+            if st.button("Export CSV"):
+                try:
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    export_filename = f"library_export_{timestamp}.csv"
+                    df.to_csv(export_filename, index=False)
+                    st.success(f"Exported to {export_filename}")
+                    csv_data = df.to_csv(index=False)
+                    st.download_button(
+                        label="Download",
+                        data=csv_data,
+                        file_name=export_filename,
+                        mime="text/csv",
+                        key="download_export"
+                    )
+                except Exception as e:
+                    st.error(f"Export failed: {e}")
+            if st.button("Sync Libib"):
+                st.session_state["show_libib_sync"] = True
 
     filters = {
-        "title_search": title_search,
-        "group": group_filter,
-        "author": author_filter,
-        "year": year_filter
+        "title_search": st.session_state.get("search_input", ""),
+        "group": st.session_state.get("flt_group", "All"),
+        "author": st.session_state.get("flt_author", "All"),
+        "year": st.session_state.get("flt_year", "All"),
     }
 
     filtered_df = apply_filters(df, filters)
-    sorted_df = sort_dataframe(filtered_df, sort_by, ascending)
+    sorted_df = sort_dataframe(
+        filtered_df,
+        st.session_state.get("sort_by", "title"),
+        st.session_state.get("sort_order", "Ascending") == "Ascending"
+    )
 
     if len(sorted_df) != len(df):
         st.info(f"Showing {len(sorted_df)} of {len(df)} books")
@@ -471,7 +569,6 @@ def display_libib_sync():
             if "error" in stats:
                 st.error(f"❌ {stats['error']}")
             else:
-                # Save the updated library (GitHub or local)
                 save_library(updated_df, reason="Libib sync")
                 st.cache_data.clear()
 
@@ -577,6 +674,9 @@ def display_featured_book(df: pd.DataFrame) -> None:
                 if st.button("📖 View Details", key=f"details_{idx}", use_container_width=True):
                     st.session_state["navigate_to"] = ("book", title)
 
+    # Back to top helper at the end of the grid
+    st.markdown('[⬆️ Back to top](#top)')
+
 # Backward-compatible alias so main() call still works
 def display_library(df: pd.DataFrame) -> None:
     display_featured_book(df)
@@ -668,6 +768,8 @@ def display_book_details(df: pd.DataFrame, book_title: str) -> None:
         st.write("**Original Group:**", safe_str(book.get("group", "")))
         st.write("**Date Added:**", safe_str(book.get("date_added", "")))
 
+    st.markdown('[⬆️ Back to top](#top)')
+
 def display_author_books(df: pd.DataFrame, author: str) -> None:
     if st.button("⬅ Back to Library"):
         st.session_state["navigate_to"] = ("home", "")
@@ -728,6 +830,8 @@ def display_author_books(df: pd.DataFrame, author: str) -> None:
     except Exception as e:
         st.error(f"Error fetching from Open Library: {e}")
 
+    st.markdown('[⬆️ Back to top](#top)')
+
 def display_group_books(df: pd.DataFrame, group: str) -> None:
     if st.button("⬅ Back to Library"):
         st.session_state["navigate_to"] = ("home", "")
@@ -746,6 +850,79 @@ def display_group_books(df: pd.DataFrame, group: str) -> None:
             if st.button(title, key=f"group_{idx}"):
                 st.session_state["navigate_to"] = ("book", title)
 
+    st.markdown('[⬆️ Back to top](#top)')
+
+# ----------------------------
+# Add Book Page
+# ----------------------------
+
+def display_add_book(df: pd.DataFrame) -> None:
+    if st.button("⬅ Back to Library"):
+        st.session_state["navigate_to"] = ("home", "")
+
+    st.header("➕ Add a Book by ISBN")
+    isbn = st.text_input("ISBN-13 (hyphens ok)", key="add_isbn_input", placeholder="9780140177398")
+    if st.button("Search ISBN", type="primary"):
+        st.session_state["add_result"] = fetch_book_by_isbn(isbn)
+
+    result = st.session_state.get("add_result", {})
+    if result:
+        st.subheader("Result")
+        with st.container(border=True):
+            c1, c2 = st.columns([1, 2])
+            with c1:
+                cover_url = safe_str(result.get("image_url", "")) or get_default_cover_url(result.get("ean_isbn13", ""))
+                if cover_url:
+                    try:
+                        st.image(cover_url, width=150)
+                    except Exception:
+                        st.write("📖")
+            with c2:
+                # Editable fields before save
+                title = st.text_input("Title", value=safe_str(result.get("title", "")), key="add_title")
+                creators = st.text_input("Authors/Creators", value=safe_str(result.get("creators", "")), key="add_creators")
+                publish_date = st.text_input("Publish Year", value=safe_str(result.get("publish_date", "")), key="add_publish_date")
+                length = st.text_input("Page Count", value=safe_str(result.get("length", "")), key="add_length")
+                image_url = st.text_input("Image URL", value=safe_str(result.get("image_url", "")), key="add_image_url")
+                description = st.text_area("Description", value=safe_str(result.get("description", "")), key="add_description", height=120)
+                ean_isbn13 = st.text_input("ISBN-13", value=safe_str(result.get("ean_isbn13", isbn)), key="add_ean")
+
+                # Group/shelf (optional)
+                groups = sorted([g for g in df.get("group", pd.Series([])).fillna("Unsorted").astype(str).unique().tolist() if g])
+                group_choice = st.selectbox("Shelf / Group (optional)", ["(none)"] + groups, key="add_group")
+
+                if st.button("💾 Add to Library", type="primary"):
+                    # avoid duplicates by ISBN-13
+                    if not ean_isbn13:
+                        st.error("ISBN-13 is required to add.")
+                        return
+
+                    if not df.empty and "ean_isbn13" in df.columns:
+                        if ean_isbn13 in set(df["ean_isbn13"].dropna().astype(str)):
+                            st.warning("This ISBN already exists in your library.")
+                            return
+
+                    new_row = {
+                        "title": safe_str(title) or "Untitled",
+                        "creators": safe_str(creators),
+                        "publish_date": safe_str(publish_date),
+                        "length": safe_str(length),
+                        "image_url": safe_str(image_url),
+                        "description": safe_str(description),
+                        "ean_isbn13": safe_str(ean_isbn13),
+                        "group": (group_choice if group_choice != "(none)" else "Unsorted"),
+                        "date_added": datetime.now().strftime("%Y-%m-%d"),
+                    }
+                    updated_df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True) if not df.empty else pd.DataFrame([new_row])
+                    save_library(updated_df, reason="Add book (manual)")
+                    st.cache_data.clear()
+                    st.success("✅ Book added!")
+                    st.session_state.pop("add_result", None)
+                    # Navigate to the book page
+                    st.session_state["navigate_to"] = ("book", new_row["title"])
+
+    st.markdown('[⬆️ Back to top](#top)')
+
 # ----------------------------
 # Main App and Navigation
 # ----------------------------
@@ -761,13 +938,18 @@ def handle_navigation():
             st.query_params["author"] = nav_value
         elif nav_type == "group":
             st.query_params["group"] = nav_value
+        elif nav_type == "add":
+            st.query_params["add"] = "1"
         del st.session_state["navigate_to"]
 
 def main() -> None:
     handle_navigation()
     df = load_library()
 
+    # Sidebar debug + quick add
     with st.sidebar:
+        if st.button("➕ Add Book", use_container_width=True, key="side_add"):
+            st.session_state["navigate_to"] = ("add", "")
         st.subheader("Debug Info")
         if st.checkbox("Show Debug", value=False):
             st.write("Query Params:", dict(st.query_params))
@@ -778,8 +960,11 @@ def main() -> None:
     book_param = get_query_param("book")
     author_param = get_query_param("author")
     group_param = get_query_param("group")
+    add_param = get_query_param("add")
 
-    if book_param:
+    if add_param:
+        display_add_book(df)
+    elif book_param:
         display_book_details(df, book_param)
     elif author_param:
         display_author_books(df, author_param)
