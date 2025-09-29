@@ -468,12 +468,19 @@ def sort_dataframe(df: pd.DataFrame, sort_by: str, ascending: bool = True) -> pd
     else:
         return df.sort_values(sort_by, ascending=ascending, na_position="last")
 
+# --- Randomize helper ---
+def randomize_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    """Shuffle rows on each rerun."""
+    if df.empty:
+        return df
+    return df.sample(frac=1, random_state=None).reset_index(drop=True)
+
 # ----------------------------
 # Views / UI Blocks
 # ----------------------------
 
 def display_library_controls(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
-    """Always-on search + expanders for Filters, Sort, Sync. Returns filtered/sorted df."""
+    """Always-on search + expanders for Filters, Sort, Sync. Returns filtered/sorted (or randomized) df."""
     filter_options = get_filter_options(df)
 
     # Always-visible search + quick actions
@@ -499,15 +506,25 @@ def display_library_controls(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     with e2:
         with st.expander("Sort", expanded=False):
             sort_options = {
+                "__random__": "(Random each refresh)",
                 "title": "Title",
                 "creators": "Author",
                 "publish_date": "Year",
                 "date_added": "Added",
                 "group": "Group"
             }
-            sort_by = st.selectbox("Sort by", list(sort_options.keys()),
-                                   format_func=lambda x: sort_options[x], key="sort_by")
-            ascending = st.selectbox("Order", ["Ascending", "Descending"], key="sort_order") == "Ascending"
+            sort_by = st.selectbox(
+                "Sort by",
+                list(sort_options.keys()),
+                index=0,  # default to randomize
+                format_func=lambda x: sort_options[x],
+                key="sort_by"
+            )
+            ascending = st.selectbox(
+                "Order",
+                ["Ascending", "Descending"],
+                key="sort_order"
+            ) == "Ascending"
 
     with e3:
         with st.expander("Sync", expanded=False):
@@ -538,16 +555,21 @@ def display_library_controls(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     }
 
     filtered_df = apply_filters(df, filters)
-    sorted_df = sort_dataframe(
-        filtered_df,
-        st.session_state.get("sort_by", "title"),
-        st.session_state.get("sort_order", "Ascending") == "Ascending"
-    )
 
-    if len(sorted_df) != len(df):
-        st.info(f"Showing {len(sorted_df)} of {len(df)} books")
+    # Randomize unless a sort is chosen
+    if st.session_state.get("sort_by", "__random__") == "__random__":
+        sorted_or_random_df = randomize_dataframe(filtered_df)
+    else:
+        sorted_or_random_df = sort_dataframe(
+            filtered_df,
+            st.session_state.get("sort_by", "title"),
+            st.session_state.get("sort_order", "Ascending") == "Ascending"
+        )
 
-    return sorted_df, filters
+    if len(sorted_or_random_df) != len(df):
+        st.info(f"Showing {len(sorted_or_random_df)} of {len(df)} books")
+
+    return sorted_or_random_df, filters
 
 def display_libib_sync():
     st.header("📤 Sync with Libib")
@@ -895,7 +917,7 @@ def display_author_books(df: pd.DataFrame, author: str) -> None:
     st.header(f"📖 Books by {author}")
 
     # Goodreads author search "button"
-    render_link_button(f"Goodreads: {author}", gr_search(author))
+    render_link_button(f"Search Goodreads for {author}", gr_search(author))
 
     if not df.empty:
         matches = get_books_by_individual_author(df, author)
