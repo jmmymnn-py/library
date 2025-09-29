@@ -895,7 +895,7 @@ def display_author_books(df: pd.DataFrame, author: str) -> None:
     st.header(f"📖 Books by {author}")
 
     # Goodreads author search "button"
-    render_link_button(f"Search Goodreads for {author}", gr_search(author))
+    render_link_button(f"Goodreads: {author}", gr_search(author))
 
     if not df.empty:
         matches = get_books_by_individual_author(df, author)
