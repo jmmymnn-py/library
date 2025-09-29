@@ -198,6 +198,28 @@ def goodreads_url_from_isbn(isbn: str) -> str:
     s = safe_str(isbn).replace("-", "").strip()
     return gr_search(s) if s else ""
 
+# A tiny fallback "link button" for older Streamlit versions
+def render_link_button(label: str, url: str):
+    if not safe_str(url):
+        return
+    st.markdown(
+        f"""
+        <a href="{url}" target="_blank" rel="noopener"
+           style="
+             display:inline-block;
+             padding:0.45rem 0.75rem;
+             border-radius:0.5rem;
+             background:#f0f2f6;
+             text-decoration:none;
+             font-weight:600;
+             color:inherit;
+             border:1px solid rgba(49,51,63,.2);
+             ">
+           {label}
+        </a>
+        """,
+        unsafe_allow_html=True,
+    )
 # ---------------------------------------
 
 def split_authors(creators_field):
@@ -597,7 +619,7 @@ def _display_read_next_strip(df: pd.DataFrame) -> None:
                 st.caption(f"Published: {year}")
                 st.caption(f"Shelf: {group}")
 
-                c_open, c_group = st.columns(2)
+                c_open, _ = st.columns(2)
                 with c_open:
                     if st.button("Open", key=f"rn_open_{idx}", use_container_width=True):
                         st.session_state["navigate_to"] = ("book", title)
@@ -763,10 +785,9 @@ def display_book_details(df: pd.DataFrame, book_title: str) -> None:
         if edit_mode:
             new_title = st.text_input("Title", value=cur_title, key=f"title_input_{book_idx}")
 
-            # Goodreads button under Title (uses current ISBN in edit mode, not live-updating)
+            # Goodreads button under Title (uses current ISBN in edit mode preview)
             gr_url_book_preview = goodreads_url_from_isbn(cur_isbn)
-            if gr_url_book_preview:
-                st.link_button("Goodreads", gr_url_book_preview, key=f"gr_btn_edit_title_{book_idx}")
+            render_link_button("Goodreads", gr_url_book_preview)
 
             new_creators = st.text_input("Authors/Creators", value=cur_creators, key=f"creators_input_{book_idx}")
             new_length = st.text_input("Page Count", value=cur_length, key=f"length_input_{book_idx}")
@@ -775,8 +796,7 @@ def display_book_details(df: pd.DataFrame, book_title: str) -> None:
 
             # Optional Goodreads under ISBN as well
             gr_url_book_isbn = goodreads_url_from_isbn(new_isbn or cur_isbn)
-            if gr_url_book_isbn:
-                st.link_button("Goodreads (by ISBN)", gr_url_book_isbn, key=f"gr_btn_edit_isbn_{book_idx}")
+            render_link_button("Goodreads (by ISBN)", gr_url_book_isbn)
 
         else:
             # Read-only view
@@ -784,8 +804,7 @@ def display_book_details(df: pd.DataFrame, book_title: str) -> None:
 
             # Goodreads button directly under Title (uses ISBN)
             gr_url_book = goodreads_url_from_isbn(cur_isbn)
-            if gr_url_book:
-                st.link_button("Goodreads", gr_url_book, key=f"gr_btn_view_{book_idx}")
+            render_link_button("Goodreads", gr_url_book)
 
             pages_display = format_pages(cur_length)
             st.markdown(f"**Creator:** {cur_creators or 'Unknown'}")
@@ -875,8 +894,8 @@ def display_author_books(df: pd.DataFrame, author: str) -> None:
         st.session_state["navigate_to"] = ("home", "")
     st.header(f"📖 Books by {author}")
 
-    # Goodreads author search button
-    st.link_button(f"Search Goodreads for {author}", gr_search(author), key=f"gr_author_btn_{author}")
+    # Goodreads author search "button"
+    render_link_button(f"Search Goodreads for {author}", gr_search(author))
 
     if not df.empty:
         matches = get_books_by_individual_author(df, author)
