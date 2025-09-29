@@ -179,11 +179,6 @@ def format_pages(val) -> str:
     """
     Return a pages string without trailing zeros if it's numeric;
     otherwise return the original string.
-    Examples:
-      "300.0" -> "300"
-      "300.50" -> "300.5"
-      "00300" -> "300"
-      "N/A" -> "N/A"
     """
     s = safe_str(val)
     if not s:
@@ -320,7 +315,7 @@ def fetch_book_by_isbn(isbn: str) -> Dict[str, Any]:
 def sync_with_libib(current_df: pd.DataFrame, libib_file) -> tuple[pd.DataFrame, dict]:
     try:
         libib_df = pd.read_csv(libib_file)
-        isbn_columns = ['ean_isbn13', 'isbn13', 'isbn', 'ISBN', 'ISBN13', 'EAN']
+        isbn_columns = ['ean_isbn13', 'isbn13', 'isbn', 'ISBN', 'ISBN3', 'EAN', 'ISBN13']
         libib_isbn_col = next((c for c in isbn_columns if c in libib_df.columns), None)
         if libib_isbn_col is None:
             return current_df, {"error": "No ISBN column found in uploaded file"}
@@ -596,10 +591,6 @@ def _display_read_next_strip(df: pd.DataFrame) -> None:
                 with c_open:
                     if st.button("Open", key=f"rn_open_{idx}", use_container_width=True):
                         st.session_state["navigate_to"] = ("book", title)
-                # with c_group:
-                #     # Quick jump to the shelf/group
-                #     if st.button("View Shelf", key=f"rn_group_{idx}", use_container_width=True):
-                #         st.session_state["navigate_to"] = ("group", group)
 
 def display_featured_book(df: pd.DataFrame) -> None:
     """Display a random featured book, then the Read Next strip (if any), then the library grid."""
@@ -636,9 +627,7 @@ def display_featured_book(df: pd.DataFrame) -> None:
         if description:
             preview = description[:200] + "..." if len(description) > 200 else description
             st.markdown(f"*{preview}*")
-        # Removed "More Details" button per request
 
-    # Read Next between featured and library
     _display_read_next_strip(df)
 
     st.divider()
@@ -686,6 +675,7 @@ def display_featured_book(df: pd.DataFrame) -> None:
                     for j, author in enumerate(displayed_authors):
                         if st.button(author, key=f"author_{idx}_{j}"):
                             st.session_state["navigate_to"] = ("author", author)
+
                 if remaining_count > 0:
                     st.markdown(f"*+{remaining_count} more author{'s' if remaining_count > 1 else ''}*")
 
@@ -698,7 +688,7 @@ def display_library(df: pd.DataFrame) -> None:
     display_featured_book(df)
 
 # ----------------------------
-# Book Details (with Edit Mode)
+# Book Details (with left-side Group/Location)
 # ----------------------------
 
 def display_book_details(df: pd.DataFrame, book_title: str) -> None:
@@ -715,13 +705,30 @@ def display_book_details(df: pd.DataFrame, book_title: str) -> None:
     st.header("📖 Book Details")
     book_idx = book.name
 
-    # Global edit toggle (default OFF)
+    # Global edit toggle (default OFF) — controls right-side fields & save button
     edit_mode = st.toggle("Edit", value=False, key=f"edit_mode_{book_idx}")
 
+    # Current values
+    cur_title = safe_str(book.get("title", ""))
+    cur_creators = safe_str(book.get("creators", ""))
+    cur_length = safe_str(book.get("length", ""))
+    cur_publish_date = safe_str(book.get("publish_date", ""))
+    cur_group = safe_str(book.get("group", "Unsorted"))
+    cur_isbn = safe_str(book.get("ean_isbn13", ""))
+    current_image_url = safe_str(book.get("image_url", ""))
+
+    # Group list; ensure current group is present
+    all_groups = df["group"].fillna("Unsorted").astype(str).unique().tolist()
+    all_groups = sorted([g for g in all_groups if g])
+    if cur_group and cur_group not in all_groups:
+        all_groups.append(cur_group)
+        all_groups = sorted(all_groups)
+
     col1, col2 = st.columns([2, 3])
+
+    # -------- Left column: Cover + ALWAYS-editable Image URL + ALWAYS-editable Group/Location
     with col1:
         st.subheader("Cover Image")
-        current_image_url = safe_str(book.get("image_url", ""))
         display_url = current_image_url or get_default_cover_url(book.get("ean_isbn13"))
         if display_url:
             try:
@@ -729,63 +736,40 @@ def display_book_details(df: pd.DataFrame, book_title: str) -> None:
             except Exception:
                 st.write("📖 No cover available")
 
-        # Image URL: editable only in edit mode
-        if edit_mode:
-            new_image_url = st.text_input("Image URL", value=current_image_url, key=f"image_url_input_{book_idx}")
-        else:
-            st.markdown("**Image URL**")
-            st.code(current_image_url or "(empty)")
-            new_image_url = current_image_url  # carry forward
+        # Image URL — always editable
+        new_image_url = st.text_input("Image URL", value=current_image_url, key=f"image_url_input_{book_idx}")
 
+        # Group/Location — always editable, placed below Image URL
+        try:
+            group_index = all_groups.index(cur_group) if cur_group in all_groups else 0
+        except ValueError:
+            group_index = 0
+        new_group = st.selectbox("Group/Location", all_groups, index=group_index, key=f"group_select_left_{book_idx}")
+
+    # -------- Right column: Book Information (no Group/Location here)
     with col2:
         st.subheader("Book Information")
-
-        # Current values
-        cur_title = safe_str(book.get("title", ""))
-        cur_creators = safe_str(book.get("creators", ""))
-        cur_length = safe_str(book.get("length", ""))
-        cur_publish_date = safe_str(book.get("publish_date", ""))
-        cur_group = safe_str(book.get("group", "Unsorted"))
-        cur_isbn = safe_str(book.get("ean_isbn13", ""))
-
-        # Group list for editing
-        all_groups = df["group"].fillna("Unsorted").astype(str).unique().tolist()
-        all_groups = sorted([g for g in all_groups if g])
-        if cur_group and cur_group not in all_groups:
-            all_groups.append(cur_group)
-            all_groups = sorted(all_groups)
 
         if edit_mode:
             new_title = st.text_input("Title", value=cur_title, key=f"title_input_{book_idx}")
             new_creators = st.text_input("Authors/Creators", value=cur_creators, key=f"creators_input_{book_idx}")
             new_length = st.text_input("Page Count", value=cur_length, key=f"length_input_{book_idx}")
             new_publish_date = st.text_input("Publish Date", value=cur_publish_date, key=f"publish_date_input_{book_idx}")
-
-            try:
-                group_index = all_groups.index(cur_group) if cur_group in all_groups else 0
-            except ValueError:
-                group_index = 0
-            new_group = st.selectbox("Group/Location", all_groups, index=group_index, key=f"group_select_{book_idx}")
-
             new_isbn = st.text_input("ISBN-13", value=cur_isbn, key=f"isbn_input_{book_idx}")
         else:
-            # Read-only view
             pages_display = format_pages(cur_length)
-
             st.markdown(f"**Title:** {cur_title or 'Untitled'}")
             st.markdown(f"**Creator:** {cur_creators or 'Unknown'}")
             year_txt = cur_publish_date[:4] if len(cur_publish_date) >= 4 and cur_publish_date[:4].isdigit() else (cur_publish_date or 'Unknown')
             st.markdown(f"**Published:** {year_txt or 'Unknown'}")
-            st.markdown(f"**Location:** {cur_group or 'Unsorted'}")
             st.markdown(f"**Pages:** {pages_display or 'Unknown'}")
             st.markdown(f"**ISBN-13:** {cur_isbn or '(none)'}")
 
-            # carry forward current values so Save logic can reuse
+            # carry forward for save
             new_title = cur_title
             new_creators = cur_creators
             new_length = cur_length
             new_publish_date = cur_publish_date
-            new_group = cur_group
             new_isbn = cur_isbn
 
         # Quick Author Search (always available)
@@ -822,7 +806,7 @@ def display_book_details(df: pd.DataFrame, book_title: str) -> None:
 
     st.divider()
 
-    # Save button only visible in edit mode
+    # Save button (saves both left + right edits) only visible in edit mode
     if edit_mode:
         c1, c2, c3 = st.columns([1, 1, 1])
         with c2:
@@ -832,8 +816,8 @@ def display_book_details(df: pd.DataFrame, book_title: str) -> None:
                     df.at[book_idx, "creators"] = new_creators
                     df.at[book_idx, "length"] = new_length
                     df.at[book_idx, "publish_date"] = new_publish_date
-                    df.at[book_idx, "group"] = new_group
-                    df.at[book_idx, "image_url"] = new_image_url
+                    df.at[book_idx, "group"] = new_group             # ← save from left
+                    df.at[book_idx, "image_url"] = new_image_url      # ← save from left
                     df.at[book_idx, "description"] = new_description
                     if "ean_isbn13" in df.columns:
                         df.at[book_idx, "ean_isbn13"] = new_isbn
