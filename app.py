@@ -696,8 +696,7 @@ def display_book_details(df: pd.DataFrame, book_title: str) -> None:
     book_idx = book.name
 
     # Global edit toggle (default OFF)
-    edit_mode = st.toggle("✏️ Edit mode", value=False, key=f"edit_mode_{book_idx}")
-    st.caption("Turn on to edit the fields below. Read Next remains available anytime.")
+    edit_mode = st.toggle("Edit", value=False, key=f"edit_mode_{book_idx}")
 
     col1, col2 = st.columns([2, 3])
     with col1:
@@ -751,12 +750,14 @@ def display_book_details(df: pd.DataFrame, book_title: str) -> None:
             new_isbn = st.text_input("ISBN-13", value=cur_isbn, key=f"isbn_input_{book_idx}")
         else:
             # Read-only view
+            cur_length = f"{cur_length:g}"
+            
             st.markdown(f"**Title:** {cur_title or 'Untitled'}")
-            st.markdown(f"**Authors/Creators:** {cur_creators or 'Unknown'}")
+            st.markdown(f"**Creator:** {cur_creators or 'Unknown'}")
             year_txt = cur_publish_date[:4] if len(cur_publish_date) >= 4 and cur_publish_date[:4].isdigit() else (cur_publish_date or 'Unknown')
             st.markdown(f"**Published:** {year_txt or 'Unknown'}")
-            st.markdown(f"**Group/Location:** {cur_group or 'Unsorted'}")
-            st.markdown(f"**Page Count:** {cur_length or 'Unknown'}")
+            st.markdown(f"**Location:** {cur_group or 'Unsorted'}")
+            st.markdown(f"**Pages:** {cur_length or 'Unknown'}")
             st.markdown(f"**ISBN-13:** {cur_isbn or '(none)'}")
 
             # carry forward current values so Save logic can reuse
