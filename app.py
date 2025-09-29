@@ -190,6 +190,16 @@ def format_pages(val) -> str:
     except ValueError:
         return s
 
+# ---------- NEW: Goodreads helpers ----------
+def gr_search(q: str) -> str:
+    return f"https://www.goodreads.com/search?q={requests.utils.quote(safe_str(q))}&search_type=books"
+
+def goodreads_url_from_isbn(isbn: str) -> str:
+    s = safe_str(isbn).replace("-", "").strip()
+    return gr_search(s) if s else ""
+
+# --------------------------------------------
+
 def split_authors(creators_field):
     if pd.isna(creators_field) or not str(creators_field).strip():
         return ["Unknown"]
@@ -315,7 +325,7 @@ def fetch_book_by_isbn(isbn: str) -> Dict[str, Any]:
 def sync_with_libib(current_df: pd.DataFrame, libib_file) -> tuple[pd.DataFrame, dict]:
     try:
         libib_df = pd.read_csv(libib_file)
-        isbn_columns = ['ean_isbn13', 'isbn13', 'isbn', 'ISBN', 'ISBN3', 'EAN', 'ISBN13']
+        isbn_columns = ['ean_isbn13', 'isbn13', 'isbn', 'ISBN', 'ISBN13', 'EAN']
         libib_isbn_col = next((c for c in isbn_columns if c in libib_df.columns), None)
         if libib_isbn_col is None:
             return current_df, {"error": "No ISBN column found in uploaded file"}
@@ -688,7 +698,7 @@ def display_library(df: pd.DataFrame) -> None:
     display_featured_book(df)
 
 # ----------------------------
-# Book Details (with left-side Group/Location)
+# Book Details (with left-side Group/Location + Goodreads under title)
 # ----------------------------
 
 def display_book_details(df: pd.DataFrame, book_title: str) -> None:
@@ -752,13 +762,34 @@ def display_book_details(df: pd.DataFrame, book_title: str) -> None:
 
         if edit_mode:
             new_title = st.text_input("Title", value=cur_title, key=f"title_input_{book_idx}")
+
+            # Goodreads button based on current/new ISBN — show directly under Title
+            tmp_isbn_preview = cur_isbn  # default preview target
+            st.caption("")  # small spacer
+            gr_url_book_preview = goodreads_url_from_isbn(tmp_isbn_preview)
+            if gr_url_book_preview:
+                st.link_button("Goodreads", gr_url_book_preview, use_container_width=False, key=f"gr_btn_edit_title_{book_idx}")
+
             new_creators = st.text_input("Authors/Creators", value=cur_creators, key=f"creators_input_{book_idx}")
             new_length = st.text_input("Page Count", value=cur_length, key=f"length_input_{book_idx}")
             new_publish_date = st.text_input("Publish Date", value=cur_publish_date, key=f"publish_date_input_{book_idx}")
             new_isbn = st.text_input("ISBN-13", value=cur_isbn, key=f"isbn_input_{book_idx}")
+
+            # (Optional live Goodreads under ISBN too; keeps UX consistent)
+            gr_url_book_isbn = goodreads_url_from_isbn(new_isbn or cur_isbn)
+            if gr_url_book_isbn:
+                st.link_button("Goodreads (by ISBN)", gr_url_book_isbn, use_container_width=False, key=f"gr_btn_edit_isbn_{book_idx}")
+
         else:
-            pages_display = format_pages(cur_length)
+            # Read-only view
             st.markdown(f"**Title:** {cur_title or 'Untitled'}")
+
+            # Goodreads button directly under Title (uses ISBN)
+            gr_url_book = goodreads_url_from_isbn(cur_isbn)
+            if gr_url_book:
+                st.link_button("Goodreads", gr_url_book, use_container_width=False, key=f"gr_btn_view_{book_idx}")
+
+            pages_display = format_pages(cur_length)
             st.markdown(f"**Creator:** {cur_creators or 'Unknown'}")
             year_txt = cur_publish_date[:4] if len(cur_publish_date) >= 4 and cur_publish_date[:4].isdigit() else (cur_publish_date or 'Unknown')
             st.markdown(f"**Published:** {year_txt or 'Unknown'}")
@@ -846,6 +877,10 @@ def display_author_books(df: pd.DataFrame, author: str) -> None:
         st.session_state["navigate_to"] = ("home", "")
     st.header(f"📖 Books by {author}")
 
+    # ---------- NEW: Goodreads author search button ----------
+    st.link_button(f"Search Goodreads for {author}", gr_search(author), use_container_width=False, key=f"gr_author_btn_{author}")
+    # ---------------------------------------------------------
+
     if not df.empty:
         matches = get_books_by_individual_author(df, author)
         st.subheader("In Your Library")
@@ -894,8 +929,6 @@ def display_author_books(df: pd.DataFrame, author: str) -> None:
                             pub_year = doc.get("first_publish_year", "N/A")
                             if pub_year and pub_year != "N/A":
                                 st.write(f"Published: {pub_year}")
-        else:
-            st.error(f"Failed to fetch from Open Library (Status: {response.status_code})")
     except requests.RequestException as e:
         st.warning(f"Could not connect to Open Library: {e}")
     except Exception as e:
