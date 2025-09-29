@@ -175,6 +175,26 @@ def safe_str(val) -> str:
         return ""
     return str(val).strip()
 
+def format_pages(val) -> str:
+    """
+    Return a pages string without trailing zeros if it's numeric;
+    otherwise return the original string.
+    Examples:
+      "300.0" -> "300"
+      "300.50" -> "300.5"
+      "00300" -> "300"
+      "N/A" -> "N/A"
+    """
+    s = safe_str(val)
+    if not s:
+        return ""
+    try:
+        x = float(s.replace(",", ""))
+        out = "{0:f}".format(x).rstrip("0").rstrip(".")
+        return out or "0"
+    except ValueError:
+        return s
+
 def split_authors(creators_field):
     if pd.isna(creators_field) or not str(creators_field).strip():
         return ["Unknown"]
@@ -750,14 +770,14 @@ def display_book_details(df: pd.DataFrame, book_title: str) -> None:
             new_isbn = st.text_input("ISBN-13", value=cur_isbn, key=f"isbn_input_{book_idx}")
         else:
             # Read-only view
-            cur_length = f"{cur_length:g}"
-            
+            pages_display = format_pages(cur_length)
+
             st.markdown(f"**Title:** {cur_title or 'Untitled'}")
             st.markdown(f"**Creator:** {cur_creators or 'Unknown'}")
             year_txt = cur_publish_date[:4] if len(cur_publish_date) >= 4 and cur_publish_date[:4].isdigit() else (cur_publish_date or 'Unknown')
             st.markdown(f"**Published:** {year_txt or 'Unknown'}")
             st.markdown(f"**Location:** {cur_group or 'Unsorted'}")
-            st.markdown(f"**Pages:** {cur_length or 'Unknown'}")
+            st.markdown(f"**Pages:** {pages_display or 'Unknown'}")
             st.markdown(f"**ISBN-13:** {cur_isbn or '(none)'}")
 
             # carry forward current values so Save logic can reuse
